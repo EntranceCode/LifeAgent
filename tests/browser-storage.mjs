@@ -1,0 +1,45 @@
+// Isolated browser storage checks. Requires running server and PLAYWRIGHT_MODULE.
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const browser=await chromium.launch({headless:true,channel:'msedge'});
+try {
+  const context=await browser.newContext();
+  const page=await context.newPage();
+  await page.goto('http://localhost:4173');
+  await page.locator('[data-action="experiment"]').click();
+  await page.locator('#f-title').fill('未完成的实验草稿');
+  const firstDirection=await page.locator('#f-directionId').inputValue();
+  await page.reload();
+  await page.locator('[data-action="experiment"]').click();
+  assert.equal(await page.locator('#f-title').inputValue(),'未完成的实验草稿');
+  assert.equal(await page.locator('#f-directionId').inputValue(),firstDirection);
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  await page.locator('[data-action="edit-experiment"]').click();
+  await page.locator('#f-title').fill('旧页面正在编辑');
+  const second=await context.newPage();
+  await second.goto('http://localhost:4173');
+  await second.locator('[data-view="experiments"]').click();
+  await second.locator('[data-action="edit-experiment"]').click();
+  await second.locator('#f-title').fill('另一个页面的新内容');
+  await second.getByRole('button',{name:'保存',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('另一个页面'));
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  assert.match(await page.locator('#form-error').innerText(),/另一个页面更新/);
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v1')).experiments[0].title),'另一个页面的新内容');
+  await page.locator('#discard-draft').click();
+  await page.locator('.side-bottom [data-view="backup"]').click();
+  const before=await page.evaluate(()=>localStorage.getItem('exploreos.v1'));
+  await page.locator('#import-file').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from('{"version":99}')});
+  await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('备份格式不正确'));
+  assert.equal(await page.evaluate(()=>localStorage.getItem('exploreos.v1')),before);
+  await page.locator('[data-view="problems"]').click();
+  await page.locator('[data-action="problem"]').click();
+  await page.locator('#f-text').fill('存储失败也不能显示保存成功');
+  await page.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='exploreos.v1')throw new DOMException('Quota exceeded','QuotaExceededError');return original.call(this,key,value);};});
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  assert.match(await page.locator('#form-error').innerText(),/本次没有保存/);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('exploreos.v1')),before);
+  await context.close();
+  console.log('Storage browser checks passed: draft after reload, stable references, concurrent edit conflict, invalid import, quota error.');
+} finally {await browser.close();}

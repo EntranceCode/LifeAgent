@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f4f5ef"><title>ExploreOS · 人生探索</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="ExploreOS 首页"><span class="brand-icon">✳</span> ExploreOS<span class="version">0.2</span></a>
+  <p class="side-label">你的开放世界</p>
+  <nav aria-label="主导航">
+    <button data-view="map" class="selected"><span>◇</span> 人生地图</button>
+    <button data-view="experiments"><span>⌁</span> 我的实验</button>
+    <button data-view="journal"><span>☷</span> 探索手记</button>
+    <button data-view="memories"><span>▧</span> 记忆收藏</button>
+    <button data-view="skills"><span>✧</span> 技能线索</button>
+    <button data-view="problems"><span>◉</span> 问题口袋</button>
+    <button data-view="backup" class="mobile-backup">数据备份</button>
+  </nav>
+  <div class="side-bottom"><p>每一段路，<br>都有它留下的东西。</p><button data-view="backup">↗ 数据备份</button><small>个人空间 · 保存在此浏览器</small></div>
+</aside>
+<main>
+  <header><span>PERSONAL EXPLORATION SPACE</span><span class="local-dot">本地探索手记</span></header>
+  <div id="content"></div>
+  <footer>No Exploration Is Wasted.<span>允许探索，允许暂停，允许还不知道。</span></footer>
+</main>
+<dialog id="dialog" aria-labelledby="dialog-title"><form id="form"><div class="dialog-top"><h2 id="dialog-title"></h2><button type="button" id="close-dialog" aria-label="关闭">×</button></div><div id="fields"></div><p id="form-error" role="alert"></p><p id="draft-status" class="form-help" role="status"></p><div class="form-actions"><button type="button" id="discard-draft" class="text-button">丢弃草稿</button><button class="primary" type="submit">保存</button></div></form></dialog>
+<div id="notice" role="status" aria-live="polite"></div>
+<script type="module" src="/app.js"></script>
+</body></html>
