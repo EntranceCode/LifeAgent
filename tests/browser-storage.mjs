@@ -2,11 +2,12 @@
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const BASE_URL=process.env.EXPLOREOS_TEST_URL||'http://localhost:4173';
 const browser=await chromium.launch({headless:true,channel:'msedge'});
 try {
   const context=await browser.newContext();
   const page=await context.newPage();
-  await page.goto('http://localhost:4173');
+  await page.goto(BASE_URL);
   await page.locator('[data-action="experiment"]').click();
   await page.locator('#f-title').fill('未完成的实验草稿');
   const firstDirection=await page.locator('#f-directionId').inputValue();
@@ -18,7 +19,7 @@ try {
   await page.locator('[data-action="edit-experiment"]').click();
   await page.locator('#f-title').fill('旧页面正在编辑');
   const second=await context.newPage();
-  await second.goto('http://localhost:4173');
+  await second.goto(BASE_URL);
   await second.locator('[data-view="experiments"]').click();
   await second.locator('[data-action="edit-experiment"]').click();
   await second.locator('#f-title').fill('另一个页面的新内容');
@@ -41,5 +42,40 @@ try {
   assert.match(await page.locator('#form-error').innerText(),/本次没有保存/);
   assert.equal(await page.evaluate(()=>localStorage.getItem('exploreos.v1')),before);
   await context.close();
-  console.log('Storage browser checks passed: draft after reload, stable references, concurrent edit conflict, invalid import, quota error.');
+  const migration=await browser.newContext();
+  const oldPage=await migration.newPage();
+  await oldPage.goto(BASE_URL);
+  await oldPage.evaluate(()=>{
+    const directions=['产品设计','AI 产品','写作','视频创作','技术服务'].map(name=>({id:crypto.randomUUID(),name}));
+    const blank={version:1,directions,experiments:[],sessions:[],memories:[],problems:[]};
+    const legacy={...blank,problems:[{id:crypto.randomUUID(),text:'旧版留下的问题',workaround:'等待恢复',createdAt:new Date().toISOString()}]};
+    localStorage.setItem('exploreos.v1',JSON.stringify(blank));
+    localStorage.setItem('exploreos.v2',JSON.stringify(legacy));
+  });
+  await oldPage.reload();
+  assert.match(await oldPage.locator('.recovery-banner').innerText(),/exploreos\.v2/);
+  assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v1')).problems.length),1);
+  assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v2')).problems.length),1,'Migration keeps the legacy source intact.');
+  await migration.close();
+  const damaged=await browser.newContext();
+  const damagedPage=await damaged.newPage();
+  await damagedPage.goto(BASE_URL);
+  const validLegacy=await damagedPage.evaluate(()=>localStorage.getItem('exploreos.v1'));
+  for(const raw of ['{broken json','{"version":99}']){
+    await damagedPage.evaluate(({raw,validLegacy})=>{
+      localStorage.setItem('exploreos.v1',raw);
+      localStorage.setItem('exploreos.v2',validLegacy);
+    },{raw,validLegacy});
+    await damagedPage.reload();
+    assert.match(await damagedPage.locator('.error-banner').innerText(),/已暂停保存以保护数据/);
+    assert.equal(await damagedPage.evaluate(()=>localStorage.getItem('exploreos.v1')),raw,'Unreadable primary data must remain available for export.');
+    await damagedPage.locator('[data-view="problems"]').click();
+    await damagedPage.locator('[data-action="problem"]').click();
+    await damagedPage.locator('#f-text').fill('损坏存储时禁止覆盖');
+    await damagedPage.getByRole('button',{name:'保存',exact:true}).click();
+    assert.match(await damagedPage.locator('#form-error').innerText(),/原有存储无法读取/);
+    assert.equal(await damagedPage.evaluate(()=>localStorage.getItem('exploreos.v1')),raw);
+  }
+  await damaged.close();
+  console.log('Storage browser checks passed: draft after reload, stable references, concurrent edit conflict, invalid import, quota error, legacy recovery, corrupt primary protection.');
 } finally {await browser.close();}

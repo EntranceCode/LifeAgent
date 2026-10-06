@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const BASE_URL=process.env.EXPLOREOS_TEST_URL||'http://localhost:4173';
 const browser=await chromium.launch({headless:true,channel:'msedge'});
 try {
   // A fresh browser context keeps smoke-test data away from the user's records.
@@ -29,12 +30,35 @@ try {
     await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,label
   );
 
-  await page.goto('http://localhost:4173');
-  await page.getByRole('button',{name:'＋ 开始一个小实验',exact:true}).click();
+  await page.goto(BASE_URL);
+  const initialState=await state();
+  await page.getByRole('button',{name:'✦ 带我去看看',exact:true}).click();
+  assert.match(await page.locator('#content').innerText(),/不知道往哪走时，先走一小步/);
+  assert.equal(await page.locator('[data-guide-pref]').count(),4);
+  const firstGuideTitle=await page.locator('.guide-card h2').innerText();
+  await action('guide-next').click();
+  assert.notEqual(await page.locator('.guide-card h2').innerText(),firstGuideTitle);
+  await page.locator('[data-guide-pref="energy"]').selectOption('low');
+  await page.locator('[data-guide-pref="minutes"]').selectOption('15');
+  await page.locator('[data-guide-pref="mode"]').selectOption('make');
+  assert.match(await page.locator('.guide-outcomes').innerText(),/先做10分钟/);
+  const guidedTitle=await page.locator('.guide-card h2').innerText();
+  await action('guide-experiment').click();
+  assert.equal(await page.locator('#f-title').inputValue(),guidedTitle);
+  assert.equal(await page.locator('#f-budget').inputValue(),'0.25');
+  assert.deepEqual(await state(),initialState,'Opening a guided experiment must not write data.');
+  await page.locator('#discard-draft').click();
+  await action('guide-problem').click();
+  assert.match(await page.locator('#f-text').inputValue(),new RegExp(guidedTitle));
+  assert.deepEqual(await state(),initialState,'Opening a guided question must not write data.');
+  await page.locator('#discard-draft').click();
+  await navigate('map');
+  await page.getByRole('button',{name:'自己开始实验',exact:true}).click();
   await page.locator('#f-title').fill('设计一次真实体验');
   await page.locator('#f-hypothesis').fill('我是否喜欢梳理流程？');
   await save();
   const experimentId=(await state()).experiments[0].id;
+  await page.waitForFunction(()=>fetch('/api/state').then(response=>response.json()).then(data=>data.latest?.state?.experiments?.length===1));
 
   await action('session',experimentId).click();
   const originalAction='画了一个流程 <script>alert(1)</script>';
@@ -123,6 +147,7 @@ try {
   assert.ok((await state()).sessions.find(record=>record.id===firstRecord.id).deletedAt);
   assert.deepEqual((await state()).memories[0],memorySnapshot);
   await navigate('backup');
+  assert.match(await page.locator('.disk-backup').innerText(),/本机自动备份/);
   await action('restore-sessions',firstRecord.id).click();
   await navigate('journal');
   assert.equal(await page.locator('#content [data-record]').count(),2);
