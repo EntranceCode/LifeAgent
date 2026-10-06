@@ -56,6 +56,22 @@ try {
   assert.match(await oldPage.locator('.recovery-banner').innerText(),/exploreos\.v2/);
   assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v1')).problems.length),1);
   assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v2')).problems.length),1,'Migration keeps the legacy source intact.');
+  await oldPage.evaluate(()=>{
+    const primary=JSON.parse(localStorage.getItem('exploreos.v1'));
+    primary.problems=[];
+    primary.directions[0].name='我自己选择的园艺方向';
+    localStorage.setItem('exploreos.v1',JSON.stringify(primary));
+  });
+  await oldPage.reload();
+  assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v1')).directions[0].name),'我自己选择的园艺方向','An edited map is not a blank state and must not be replaced by legacy data.');
+  await oldPage.evaluate(()=>{
+    const primary=JSON.parse(localStorage.getItem('exploreos.v1'));
+    primary.directions[0].name='产品设计';
+    primary.guideFeedback=[{guideKey:'产品设计|60|discover|0',value:'later',createdAt:new Date().toISOString()}];
+    localStorage.setItem('exploreos.v1',JSON.stringify(primary));
+  });
+  await oldPage.reload();
+  assert.equal(await oldPage.evaluate(()=>JSON.parse(localStorage.getItem('exploreos.v1')).guideFeedback.length),1,'User feedback is not a blank state.');
   await migration.close();
   const damaged=await browser.newContext();
   const damagedPage=await damaged.newPage();

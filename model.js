@@ -1,9 +1,9 @@
 export const uid = () => crypto.randomUUID();
 export const statuses = {active:'探索中',hold:'暂时放下',archived:'已归档'};
-const collections = ['directions','experiments','sessions','memories','problems'];
+const collections = ['directions','experiments','sessions','memories','problems','notes'];
 
 export function initialState() {
-  return {version:1,directions:['产品设计','AI 产品','写作','视频创作','技术服务'].map(name=>({id:uid(),name})),experiments:[],sessions:[],memories:[],problems:[]};
+  return {version:1,directions:['产品设计','AI 产品','写作','视频创作','技术服务'].map(name=>({id:uid(),name})),experiments:[],sessions:[],memories:[],problems:[],notes:[]};
 }
 
 function checkCollection(collection) {
@@ -14,8 +14,8 @@ function checkCollection(collection) {
 // reveals them without changing separately deleted children or memory snapshots.
 export function visibleItems(state,collection) {
   checkCollection(collection);
-  const items=state[collection].filter(item=>!item.deletedAt);
-  if(collection==='directions'||collection==='problems') return items;
+  const items=(state[collection]||[]).filter(item=>!item.deletedAt);
+  if(collection==='directions'||collection==='problems'||collection==='notes') return items;
   const directions=new Set(state.directions.filter(item=>!item.deletedAt).map(item=>item.id));
   if(collection==='experiments') return items.filter(item=>directions.has(item.directionId));
   const experiments=new Set(state.experiments.filter(item=>!item.deletedAt&&directions.has(item.directionId)).map(item=>item.id));
@@ -23,7 +23,7 @@ export function visibleItems(state,collection) {
 }
 
 export function trashItems(state) {
-  return collections.flatMap(collection=>state[collection].filter(item=>item.deletedAt).map(item=>({collection,item})));
+  return collections.flatMap(collection=>(state[collection]||[]).filter(item=>item.deletedAt).map(item=>({collection,item})));
 }
 
 export function trashItem(state,collection,id) {
@@ -67,6 +67,14 @@ export function restoreItem(state,collection,id) {
 export function summarize(sessions) {
   return {count:sessions.length, minutes:sessions.reduce((sum,s)=>sum+(s.minutes??0),0), timed:sessions.filter(s=>s.minutes!==null).length, insights:sessions.filter(s=>s.insight).map(s=>s.insight)};
 }
+export function attachNote(state,noteId,experimentId) {
+  const note=visibleItems(state,'notes').find(item=>item.id===noteId);
+  const experiment=visibleItems(state,'experiments').find(item=>item.id===experimentId);
+  if(!note||!experiment)throw Error('请选择一条有效随手记和一个可用实验。');
+  if(note.sessionId)throw Error('这条随手记已经整理过了。');
+  const session={id:uid(),experimentId,date:note.date,action:note.text,insight:'',minutes:null,feeling:null,achievement:null,again:null,skills:[]};
+  return {...state,sessions:[...state.sessions,session],notes:state.notes.map(item=>item.id===noteId?{...item,directionId:experiment.directionId,sessionId:session.id}:item)};
+}
 export function makeMemory(state,experimentId,decision,reflection) {
   const e=visibleItems(state,'experiments').find(e=>e.id===experimentId);
   if(!e || !Object.hasOwn(statuses,decision) || typeof reflection!=='string' || !reflection.trim() || reflection.length>20000) throw Error('请填写复盘内容并选择有效决定。');
@@ -100,6 +108,7 @@ export function validateState(d) {
   const number=v=>v===null||(Number.isFinite(v)&&v>=0&&v<=1000000);
   if(!d||Array.isArray(d)||d.version!==1) fail();
   for(const key of collections) {
+    if(key==='notes'&&d[key]===undefined)continue;
     if(!Array.isArray(d[key])||d[key].length>50000) fail();
     const ids=new Set();
     for(const item of d[key]) { if(!item||typeof item!=='object'||Array.isArray(item)||!nonempty(item.id)||ids.has(item.id)||!deletion(item)) fail(); ids.add(item.id); }
@@ -114,5 +123,18 @@ export function validateState(d) {
     if(new Set(v.sessions.map(session=>session.id)).size!==v.sessions.length) fail();
   }
   for(const v of d.problems) if(!text(v.text)||!str(v.workaround)||!date(v.createdAt)) fail();
+  for(const v of d.notes||[]) {
+    if(!text(v.text)||!calendarDate(v.date)||!timestamp(v.createdAt)||!timestamp(v.updatedAt))fail();
+    if(v.directionId!==null&&!dirs.has(v.directionId))fail();
+    if(v.sessionId!==null&&!d.sessions.some(s=>s.id===v.sessionId))fail();
+  }
+  if(d.guideFeedback!==undefined){
+    if(!Array.isArray(d.guideFeedback)||d.guideFeedback.length>50000)fail();
+    const keys=new Set();
+    for(const v of d.guideFeedback){
+      if(!v||!str(v.guideKey,2000)||!v.guideKey.trim()||keys.has(v.guideKey)||!['interested','later','tried'].includes(v.value)||!timestamp(v.createdAt))fail();
+      keys.add(v.guideKey);
+    }
+  }
   return d;
 }
