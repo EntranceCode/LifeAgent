@@ -11,7 +11,8 @@ const files={
   '/styles.css':['styles.css','text/css'],
   '/app.js':['app.js','text/javascript'],
   '/model.js':['model.js','text/javascript'],
-  '/guides.js':['guides.js','text/javascript']
+  '/guides.js':['guides.js','text/javascript'],
+  '/journal.js':['journal.js','text/javascript']
 };
 const projectDir=fileURLToPath(new URL('.',import.meta.url));
 const defaultDataDir=resolve(process.env.EXPLOREOS_DATA_DIR||join(projectDir,'data'));

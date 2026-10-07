@@ -1,5 +1,25 @@
 # ExploreOS 产品设计
 
+## v0.6 实现补充（2026-10-07）
+
+实验新增可选 `nextAction` 与 `completion`。默认折叠填写；向导预填具体步骤和完成标准，保存后可以在实验中继续编辑。首页的继续实验卡片显示已有下一步，没有日期或完成配额。
+
+尚未整理的随手记可新建实验并同时整理为探索记录，沿用原文、日期和空评分，原随手记保留 `sessionId`。建立实验与整理只提交一次状态；来源失效、重复整理、校验失败或存储失败都不能留下部分结果。每个来源使用独立实验草稿键，浏览或关闭草稿不创建确认记录。
+
+问题转实验新增可选 `sourceProblemId`，来源问题仍独立保留；一个问题可对应多次实验。问题页显示关联实验与状态，实验页可定位来源问题。移除来源不隐藏实验，移除实验在来源问题中显示回收站提示，恢复后链接继续可用。旧实验没有来源字段时，不用标题推测关联。
+
+复盘增加可选下一步，一次保存同时生成记忆快照、更新状态与实验的 `nextAction`。清空可以移除当前计划，历史记忆保持独立。新记忆同时快照 `hypothesis`、`completion` 和 `nextAction`，可检索、导出，实验页显示最近一次复盘。只有已有真实探索记录才能生成复盘记忆。
+
+上述新增字段均严格校验并随 JSON 与本机备份保存。格式仍为 `version:1`，旧备份读取不补写字段。
+
+## v0.5 实现补充（2026-10-07）
+
+探索手记允许关键词、方向、类型、起止日期组合筛选，起止当天均包含；日期颠倒会提示修正。支持只看尚未整理的随手记。无结果时提示调整或清除筛选，切换页面重置筛选。
+
+随手记和整理后的记录互相跳转并定位原文；关联记录或其父实验移入回收站时，原随手记保留整理标记并提供回收站入口。手记和技能来源可以按 ID 回看实验，不用标题检索替代关联，以区分同名实验。
+
+本轮不添加数据字段，格式仍为 `version:1`；筛选和回看只改变页面显示，不改写存储、记录或记忆快照。
+
 ## v0.4 实现补充（2026-10-06）
 
 随手记独立于实验，必填文字，日期默认今天，方向可空；确认保存后可编辑、检索和恢复移除。整理到实验时原子创建一条探索记录，保留原文与 `sessionId`，禁止重复整理。随手记不自动计入技能、时长或评分。
@@ -55,9 +75,9 @@
 | 实体 | 主要字段 | 关系 |
 |---|---|---|
 | Direction | id、name | 一个方向有多个实验 |
-| Experiment | id、directionId、title、hypothesis、budget、status、createdAt | 状态 active / hold / archived |
+| Experiment | id、directionId、title、hypothesis、budget、status、createdAt；可选 nextAction、completion、sourceProblemId | 状态 active / hold / archived；可追溯来源问题 |
 | Session | id、experimentId、date、action、minutes、feeling、achievement、again、insight、skills | 一次真实记录，数值允许未知 |
-| Memory | id、experimentId、title、decision、reflection、sessions、createdAt | 复盘快照，不覆盖历史 |
+| Memory | id、experimentId、title、decision、reflection、sessions、createdAt；可选 hypothesis、completion、nextAction | 复盘快照，不覆盖历史 |
 | Problem | id、text、workaround、createdAt | 独立问题线索 |
 
 使用带版本号的 JSON 导出，恢复时严格校验结构与关联。恢复替换当前数据前由用户确认，并下载当前备份。存储失败时提示，不能显示为保存成功。

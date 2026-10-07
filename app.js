@@ -1,5 +1,6 @@
-import {initialState,uid,statuses,summarize,makeMemory,validateState,visibleItems,trashItems,trashItem,restoreItem,attachNote} from './model.js';
+import {initialState,uid,statuses,summarize,reviewExperiment,addExperiment,validateState,visibleItems,trashItems,trashItem,restoreItem,attachNote} from './model.js';
 import {guidePool,sampleDirections} from './guides.js';
+import {journalEntries} from './journal.js';
 
 const KEY='exploreos.v1', LEGACY_KEYS=['exploreos.v2','exploreos.v0.2'], DRAFT_KEY='exploreos.drafts.v1', DISK_BASE_KEY='exploreos.disk-base.v1';
 const $=selector=>document.querySelector(selector);
@@ -8,6 +9,7 @@ const names={directions:'方向',experiments:'实验',sessions:'探索记录',me
 const ratingLabels={feeling:'投入感',achievement:'成就感',again:'继续意愿'};
 let state,view='map',directionFilter='',statusFilter='',query='',loadError=false,storedRaw=null,legacySource='';
 let noticeTimer,editor=null,undo=null,guideIndex=0,currentGuide=null;
+let journalFilters={kind:'',from:'',to:''},focusedExperiment='';
 let guidePrefs={energy:'normal',minutes:'60',mode:'discover',directionId:''};
 let diskBackup={status:'checking',latest:null,previous:null,error:''},diskWrite=Promise.resolve(),diskReady=Promise.resolve(),diskBase='unknown';
 const activityScore=data=>data.experiments.length+data.sessions.length+data.memories.length+data.problems.length+(data.notes||[]).length;
@@ -126,7 +128,7 @@ function save(next){
 }
 function update(collection,item){save({...state,[collection]:state[collection].map(old=>old.id===item.id?item:old)});}
 function put(collection,item,isEdit){if(isEdit)update(collection,item);else save({...state,[collection]:[...(state[collection]||[]),item]});}
-function navigate(next){view=next;directionFilter='';statusFilter='';query='';render();window.scrollTo({top:0});}
+function navigate(next){view=next;directionFilter='';statusFilter='';query='';focusedExperiment='';journalFilters={kind:'',from:'',to:''};render();window.scrollTo({top:0});}
 function timeText(list){const s=summarize(list);return s.timed?`${+(s.minutes/60).toFixed(1)} 小时${s.timed<s.count?'（部分未填时长）':''}`:'未记录时长';}
 const button=(action,text,id='',cls='')=>`<button type="button" class="${cls}" data-action="${action}" data-id="${esc(id)}">${text}</button>`;
 const intro=(label,title,text,action='')=>`<section class="intro"><div class="eyebrow">${label}</div><div class="title-row"><h1>${title}</h1>${action}</div><p>${text}</p></section>`;
@@ -137,11 +139,24 @@ function toolbar({directions=false,status=false,placeholder='搜索记录…'}={
   return `<div class="toolbar"><div class="search-field"><label class="sr-only" for="search">搜索</label><input type="search" id="search" value="${esc(query)}" placeholder="${placeholder}"></div>${directions?`<div><label class="sr-only" for="direction-filter">查看方向</label><select id="direction-filter">${options([['','全部方向'],...visible('directions').map(d=>[d.id,d.name])],directionFilter)}</select></div>`:''}${status?`<div><label class="sr-only" for="status-filter">实验状态</label><select id="status-filter">${options([['','全部状态'],...Object.entries(statuses)],statusFilter)}</select></div>`:''}</div>`;
 }
 function recordHTML(record,{editable=false,source=false}={}){
-  return `<article class="record" data-record="${esc(record.id)}"><div class="meta">${esc(record.date)} · ${record.minutes===null?'未填时长':record.minutes+' 分钟'}${source?` · ${esc(experiment(record.experimentId)?.title)}`:''}</div><p>${esc(record.action)}</p>${record.insight?`<p class="insight">发现：${esc(record.insight)}</p>`:''}<div class="meta">${Object.entries(ratingLabels).filter(([key])=>record[key]!==null).map(([key,label])=>`${label} ${record[key]}/5`).join(' · ')}</div><div class="pill-row">${record.skills.map(skill=>tag(skill)).join('')}</div>${editable?`<div class="actions subtle">${button('edit-session','编辑记录',record.id)}${button('trash-sessions','移入回收站',record.id)}</div>`:''}</article>`;
+  const original=editable?visible('notes').find(note=>note.sessionId===record.id):null;
+  return `<article class="record" data-record="${esc(record.id)}"><div class="meta">${esc(record.date)} · ${record.minutes===null?'未填时长':record.minutes+' 分钟'}${source?` · ${button('open-experiment',esc(experiment(record.experimentId)?.title),record.experimentId,'source-link')}`:''}</div><p>${esc(record.action)}</p>${record.insight?`<p class="insight">发现：${esc(record.insight)}</p>`:''}<div class="meta">${Object.entries(ratingLabels).filter(([key])=>record[key]!==null).map(([key,label])=>`${label} ${record[key]}/5`).join(' · ')}</div><div class="pill-row">${record.skills.map(skill=>tag(skill)).join('')}</div>${editable?`<div class="actions subtle">${button('edit-session','编辑记录',record.id)}${original?button('open-note','回看原随手记',original.id):''}${button('trash-sessions','移入回收站',record.id)}</div>`:''}</article>`;
+}
+function planHTML(item){
+  return item.nextAction||item.completion?`<div class="experiment-plan">${item.nextAction?`<div><span class="eyebrow">下一步</span><p>${esc(item.nextAction)}</p></div>`:''}${item.completion?`<div><span class="eyebrow">做到这里就够了</span><p>${esc(item.completion)}</p></div>`:''}</div>`:'';
+}
+function problemSourceHTML(item){
+  if(!item.sourceProblemId)return '';
+  const source=visible('problems').find(p=>p.id===item.sourceProblemId);
+  return `<p class="meta">${source?'来自问题口袋 · '+button('open-problem',esc(source.text),source.id,'source-link'):'来源问题在回收站中 · '+button('go-backup','去恢复来源','','source-link')}</p>`;
+}
+function latestReviewHTML(item){
+  const reviews=visible('memories').filter(m=>m.experimentId===item.id),latest=reviews.at(-1);
+  return latest?`<details class="latest-review"><summary>最近复盘 · ${esc(date(latest.createdAt))} · 已复盘 ${reviews.length} 次</summary><p>${esc(latest.reflection)}</p>${tag(statuses[latest.decision])}<p class="meta">复盘时的决定，当前实验状态可继续调整。</p></details>`:'';
 }
 function experimentCard(item){
   const list=sessions(item.id);
-  return `<article class="card experiment-card" data-experiment="${esc(item.id)}"><div class="section-row"><h3>${esc(item.title)}</h3>${tag(statuses[item.status])}</div><div class="meta">${esc(direction(item.directionId))} · ${list.length} 条记录 · ${timeText(list)}${item.budget!==null?` · 参考预算 ${item.budget} 小时`:''}</div><p>想验证：${esc(item.hypothesis)||'还没有明确假设，也可以先看看。'}</p><div class="actions">${item.status==='active'?button('session','＋ 记录探索',item.id,'primary'):button('resume','重新开启',item.id)}${button('review','复盘与记忆卡',item.id)}${button('edit-experiment','编辑实验',item.id)}${item.status==='active'?button('hold','暂时放下',item.id):''}</div>${list.length?`<details><summary>回看 ${list.length} 条探索记录</summary>${list.map(s=>recordHTML(s,{editable:true})).join('')}</details>`:''}<div class="card-footer">${button('trash-experiments','移入回收站',item.id,'text-button')}</div></article>`;
+  return `<article class="card experiment-card" data-experiment="${esc(item.id)}"><div class="section-row"><h3>${esc(item.title)}</h3>${tag(statuses[item.status])}</div><div class="meta">${esc(direction(item.directionId))} · ${list.length} 条记录 · ${timeText(list)}${item.budget!==null?` · 参考预算 ${item.budget} 小时`:''}</div><p>想验证：${esc(item.hypothesis)||'还没有明确假设，也可以先看看。'}</p>${planHTML(item)}${problemSourceHTML(item)}<div class="actions">${item.status==='active'?button('session','＋ 记录探索',item.id,'primary'):button('resume','重新开启',item.id)}${button('review','复盘与记忆卡',item.id)}${button('edit-experiment','编辑实验',item.id)}${item.status==='active'?button('hold','暂时放下',item.id):''}</div>${latestReviewHTML(item)}${list.length?`<details><summary>回看 ${list.length} 条探索记录</summary>${list.map(s=>recordHTML(s,{editable:true})).join('')}</details>`:''}<div class="card-footer">${button('trash-experiments','移入回收站',item.id,'text-button')}</div></article>`;
 }
 function guideDirection(){
   const dirs=visible('directions');
@@ -209,7 +224,7 @@ function overview(){
   let html=intro('YOUR OPEN WORLD','人生没有唯一主线。','跟着好奇走一小段，让每次尝试留下点什么。',`<div class="title-actions">${button('go-guide','✦ 带我去看看','','primary')}${button('note','＋ 随手记')}${button('experiment','自己开始实验')}</div>`);
   html+=`<section class="hero"><div><span class="eyebrow">NO EXPLORATION IS WASTED</span><h2>还不知道答案，也可以出发。</h2><p>这里收集你走过的路、意外的发现，以及那些「好像不适合我」的瞬间。想探索时再来，休息也很好。</p><div class="stats"><span><b>${explored}</b> 个方向留下足迹</span><span><b>${logs.length}</b> 次真实探索</span><span><b>${memories.length}</b> 张记忆卡</span></div></div><div class="orbit" aria-hidden="true"><span>✳</span></div></section>`;
   const active=exps.filter(e=>e.status==='active').slice(-2).reverse();
-  if(active.length)html+=`<div class="section-row"><h2>想继续的时候，从这里出发</h2>${button('go-experiments','查看全部 →','','text-button')}</div><div class="continue-grid">${active.map(e=>`<article class="card compact-card"><div class="eyebrow">${esc(direction(e.directionId))}</div><h3>${esc(e.title)}</h3><div class="meta">${sessions(e.id).length} 次记录 · ${timeText(sessions(e.id))}</div><div class="actions">${button('session','＋ 记录探索',e.id,'primary')}${button('open-experiment','回看实验',e.id)}</div></article>`).join('')}</div>`;
+  if(active.length)html+=`<div class="section-row"><h2>想继续的时候，从这里出发</h2>${button('go-experiments','查看全部 →','','text-button')}</div><div class="continue-grid">${active.map(e=>`<article class="card compact-card"><div class="eyebrow">${esc(direction(e.directionId))}</div><h3>${esc(e.title)}</h3><div class="meta">${sessions(e.id).length} 次记录 · ${timeText(sessions(e.id))}</div>${e.nextAction?`<p class="next-action">下一步：${esc(e.nextAction)}</p>`:''}<div class="actions">${button('session','＋ 记录探索',e.id,'primary')}${button('open-experiment','回看实验',e.id)}</div></article>`).join('')}</div>`;
   else if(!exps.length)html+=`<div class="start-note"><span>01 / 从一次小尝试开始</span><p>例如：花一点时间观察一个喜欢的产品，看看自己对哪个环节好奇。你只需要先记下想尝试什么。</p>${button('starter','用这个想法开始 →','','text-button')}</div>`;
   html+=`<div class="section-row"><h2>你的探索版图</h2><small>走过的方向，即使归档，也会保留足迹</small></div><div class="grid">`;
   const icons=['⌘','✳','✎','▷','⌁'];
@@ -222,21 +237,23 @@ function overview(){
   return html;
 }
 function experimentsPage(){
-  const items=visible('experiments').filter(e=>(!directionFilter||e.directionId===directionFilter)&&(!statusFilter||e.status===statusFilter)&&matches(e.title,e.hypothesis,direction(e.directionId),...sessions(e.id).flatMap(s=>[s.action,s.insight,...s.skills]))).reverse();
-  return intro('SMALL EXPERIMENTS','先试试看。','用一次小小的尝试，回答一个具体的问题。',button('experiment','＋ 新建实验','','primary'))+toolbar({directions:true,status:true,placeholder:'搜索实验、假设或探索内容…'})+`<div class="section-row"><h2>我的实验 <span class="count">${items.length}</span></h2><small>先尝试，再了解自己</small></div>`+(items.length?`<div class="stack">${items.map(experimentCard).join('')}</div>`:empty('这里还没有实验',query||directionFilter||statusFilter?'换个关键词或筛选条件看看。':'从一个具体问题开始，预算可以留空。'));
+  const items=visible('experiments').filter(e=>(!focusedExperiment||e.id===focusedExperiment)&&(!directionFilter||e.directionId===directionFilter)&&(!statusFilter||e.status===statusFilter)&&matches(e.title,e.hypothesis,e.nextAction,e.completion,direction(e.directionId),...sessions(e.id).flatMap(s=>[s.action,s.insight,...s.skills]))).reverse();
+  return intro('SMALL EXPERIMENTS','先试试看。','用一次小小的尝试，回答一个具体的问题。',button('experiment','＋ 新建实验','','primary'))+(focusedExperiment?`<p class="meta">正在回看一个实验 · ${button('go-experiments','查看全部实验','','source-link')}</p>`:'')+toolbar({directions:true,status:true,placeholder:'搜索实验、假设或探索内容…'})+`<div class="section-row"><h2>我的实验 <span class="count">${items.length}</span></h2><small>先尝试，再了解自己</small></div>`+(items.length?`<div class="stack">${items.map(experimentCard).join('')}</div>`:empty('这里还没有实验',query||directionFilter||statusFilter||focusedExperiment?'换个关键词或筛选条件看看。':'从一个具体问题开始，预算可以留空。'));
 }
 function noteHTML(item){
-  return `<article class="record quick-note" data-note="${esc(item.id)}"><div class="meta">${esc(item.date)} · 随手记${item.directionId?' · '+esc(direction(item.directionId)):''}${item.sessionId?' · 已整理为探索记录':''}</div><p>${esc(item.text)}</p><div class="actions subtle">${button('edit-note','编辑',item.id)}${!item.sessionId?button('attach-note','整理到实验',item.id):''}${button('trash-notes','移入回收站',item.id)}</div></article>`;
+  const linked=item.sessionId?visible('sessions').find(s=>s.id===item.sessionId):null;
+  return `<article class="record quick-note" data-note="${esc(item.id)}"><div class="meta">${esc(item.date)} · 随手记${item.directionId?' · '+esc(direction(item.directionId)):''}${item.sessionId?' · 已整理为探索记录'+(!linked?'（在回收站中）':''):''}</div><p>${esc(item.text)}</p><div class="actions subtle">${button('edit-note','编辑',item.id)}${!item.sessionId?button('attach-note','整理到实验',item.id)+button('note-experiment','新建实验并整理',item.id):linked?button('open-session','查看整理后的记录',linked.id):button('go-backup','去回收站查看')}${button('trash-notes','移入回收站',item.id)}</div></article>`;
 }
 function journalPage(){
-  const items=visible('sessions').filter(s=>(!directionFilter||experiment(s.experimentId)?.directionId===directionFilter)&&matches(s.action,s.insight,...s.skills,experiment(s.experimentId)?.title)).map(item=>({kind:'session',item}));
-  const notes=visible('notes').filter(n=>(!directionFilter||n.directionId===directionFilter)&&matches(n.text,direction(n.directionId))).map(item=>({kind:'note',item}));
-  const list=[...items,...notes].sort((a,b)=>b.item.date.localeCompare(a.item.date));
-  return intro('EXPLORATION JOURNAL','那些亲自走过的片段。','看见、听到、试过，先记一句话，之后再整理。',`<div class="title-actions">${button('note','＋ 随手记','','primary')}${button('quick-session','记录到实验')}</div>`)+toolbar({directions:true,placeholder:'搜索随手记、做过的事或发现…'})+`<p class="meta">${notes.length} 条随手记 · ${items.length} 条探索记录</p>`+(list.length?`<div class="card journal-list">${list.map(({kind,item})=>kind==='note'?noteHTML(item):recordHTML(item,{editable:true,source:true})).join('')}</div>`:empty('一句话，也可以留下','不用先建立方向或实验，记录今天的一次好奇就够了。',button('note','写下第一句')));
+  const list=journalEntries(state,{...journalFilters,query,directionId:directionFilter});
+  const notes=list.filter(entry=>entry.kind==='note').length,filtered=query||directionFilter||Object.values(journalFilters).some(Boolean);
+  const invalid=journalFilters.from&&journalFilters.to&&journalFilters.from>journalFilters.to;
+  const filters=`<section class="journal-filters" aria-label="手记筛选"><label>记录类型<select id="journal-kind">${options([['','全部记录'],['note','随手记'],['session','探索记录'],['unfiled','尚未整理的随手记']],journalFilters.kind)}</select></label><label>从这一天<input id="journal-from" type="date" value="${esc(journalFilters.from)}"></label><label>到这一天<input id="journal-to" type="date" value="${esc(journalFilters.to)}"></label>${button('clear-journal-filters','清除筛选','','text-button')}</section>`;
+  return intro('EXPLORATION JOURNAL','那些亲自走过的片段。','看见、听到、试过，先记一句话，之后再整理。',`<div class="title-actions">${button('note','＋ 随手记','','primary')}${button('quick-session','记录到实验')}</div>`)+toolbar({directions:true,placeholder:'搜索随手记、做过的事或发现…'})+filters+(invalid?'<p class="backup-error" role="alert">开始日期不能晚于结束日期，请调整日期范围。</p>':'')+`<p class="meta" role="status">${notes} 条随手记 · ${list.length-notes} 条探索记录</p>`+(list.length?`<div class="card journal-list">${list.map(({kind,item})=>kind==='note'?noteHTML(item):recordHTML(item,{editable:true,source:true})).join('')}</div>`:filtered?empty('没有符合条件的片段','试试其他关键词、方向或日期，也可以清除筛选查看全部。',button('clear-journal-filters','查看全部记录')):empty('一句话，也可以留下','不用先建立方向或实验，记录今天的一次好奇就够了。',button('note','写下第一句')));
 }
 function memoriesPage(){
-  const items=visible('memories').filter(m=>matches(m.title,m.reflection,...m.sessions.flatMap(s=>[s.action,s.insight]))).reverse();
-  return intro('MEMORY COLLECTION','走过，就有留下。','有些路会继续，有些路停在这里。它们都是你的一部分。')+toolbar({placeholder:'搜索记忆标题、感受或经历…'})+(items.length?`<div class="grid">${items.map(m=>`<article class="card memory"><span class="eyebrow">MEMORY CARD</span><h2>${esc(m.title)}</h2><div class="meta">${date(m.createdAt)} · ${timeText(m.sessions)}</div><p class="quote">${esc(m.reflection)}</p>${tag(statuses[m.decision])}<details><summary>这张记忆里的 ${m.sessions.length} 条记录</summary>${m.sessions.map(s=>recordHTML(s)).join('')}</details><div class="actions">${button('export-memory','导出为文字',m.id)}${button('trash-memories','移入回收站',m.id)}</div><p class="snapshot-note">复盘时的快照，后续编辑记录不会改写这张记忆。</p></article>`).join('')}</div>`:empty(query?'没有找到这段记忆':'第一张记忆，等你亲手留下',query?'换个关键词看看。':'做过一次探索后，在实验里复盘，就能收藏这段经历。'));
+  const items=visible('memories').filter(m=>matches(m.title,m.reflection,m.hypothesis,m.completion,m.nextAction,...m.sessions.flatMap(s=>[s.action,s.insight]))).reverse();
+  return intro('MEMORY COLLECTION','走过，就有留下。','有些路会继续，有些路停在这里。它们都是你的一部分。')+toolbar({placeholder:'搜索记忆标题、感受或经历…'})+(items.length?`<div class="grid">${items.map(m=>`<article class="card memory"><span class="eyebrow">MEMORY CARD</span><h2>${esc(m.title)}</h2><div class="meta">${date(m.createdAt)} · ${timeText(m.sessions)}</div><p class="quote">${esc(m.reflection)}</p>${tag(statuses[m.decision])}${m.hypothesis?`<p>当时想验证：${esc(m.hypothesis)}</p>`:''}${planHTML(m)}<details><summary>这张记忆里的 ${m.sessions.length} 条记录</summary>${m.sessions.map(s=>recordHTML(s)).join('')}</details><div class="actions">${button('open-experiment','回看当前实验',m.experimentId)}${button('export-memory','导出为文字',m.id)}${button('trash-memories','移入回收站',m.id)}</div><p class="snapshot-note">复盘时的快照，后续编辑记录不会改写这张记忆。</p></article>`).join('')}</div>`:empty(query?'没有找到这段记忆':'第一张记忆，等你亲手留下',query?'换个关键词看看。':'做过一次探索后，在实验里复盘，就能收藏这段经历。'));
 }
 function skillsPage(){
   const skills=new Map();visible('sessions').forEach(s=>new Set(s.skills).forEach(k=>skills.set(k,[...(skills.get(k)||[]),s])));
@@ -245,7 +262,11 @@ function skillsPage(){
 }
 function problemsPage(){
   const items=visible('problems').filter(p=>matches(p.text,p.workaround)).reverse();
-  return intro('A POCKET OF QUESTIONS','先收集问题，不急着找答案。','那些「为什么这么麻烦」的瞬间，也许是下次探索的起点。',button('problem','＋ 记下一个问题','','primary'))+toolbar({placeholder:'搜索问题或现有解决方式…'})+(items.length?`<div class="stack">${items.map(p=>`<article class="card problem-card"><div class="meta">${date(p.createdAt)}</div><h2>${esc(p.text)}</h2><p>${esc(p.workaround)||'还没有记录当前的解决方式。'}</p><div class="actions">${button('problem-experiment','变成小实验 →',p.id)}${button('edit-problem','编辑问题',p.id)}${button('trash-problems','移入回收站',p.id)}</div></article>`).join('')}</div>`:empty(query?'没有找到这个问题':'把一个生活里的小困惑装进口袋',query?'换个关键词看看。':'不用先想出解决方案，也不需要它能变成生意。'));
+  return intro('A POCKET OF QUESTIONS','先收集问题，不急着找答案。','那些「为什么这么麻烦」的瞬间，也许是下次探索的起点。',button('problem','＋ 记下一个问题','','primary'))+toolbar({placeholder:'搜索问题或现有解决方式…'})+(items.length?`<div class="stack">${items.map(p=>{
+    const linked=visible('experiments').filter(e=>e.sourceProblemId===p.id);
+    const removed=state.experiments.filter(e=>e.sourceProblemId===p.id&&e.deletedAt);
+    return `<article class="card problem-card" data-problem="${esc(p.id)}"><div class="meta">${date(p.createdAt)}</div><h2>${esc(p.text)}</h2><p>${esc(p.workaround)||'还没有记录当前的解决方式。'}</p>${linked.length?`<div class="problem-experiments"><span class="meta">已经开始 ${linked.length} 个相关实验</span>${linked.map(e=>`<div>${button('open-experiment',esc(e.title),e.id,'source-link')}${tag(statuses[e.status])}</div>`).join('')}</div>`:''}${removed.length?`<p class="meta">${removed.length} 个相关实验在回收站中 · ${button('go-backup','去恢复','','source-link')}</p>`:''}<div class="actions">${button('problem-experiment',linked.length||removed.length?'再开始一个实验 →':'变成小实验 →',p.id)}${button('edit-problem','编辑问题',p.id)}${button('trash-problems','移入回收站',p.id)}</div></article>`;
+  }).join('')}</div>`:empty(query?'没有找到这个问题':'把一个生活里的小困惑装进口袋',query?'换个关键词看看。':'不用先想出解决方案，也不需要它能变成生意。'));
 }
 function backupPage(){
   const deleted=trashItems(state).sort((a,b)=>b.item.deletedAt.localeCompare(a.item.deletedAt));
@@ -294,16 +315,23 @@ function field(name,label,type='text',required=false,placeholder=''){
 const select=(name,label,items,selected='')=>`<label for="f-${name}">${label}</label><select name="${name}" id="f-${name}">${options(items,selected)}</select>`;
 function experimentForm(item=null,prefill={}){
   if(!visible('directions').length&&!prefill.directionName){notify('先在地图上留下一个方向，再开始实验。');return;}
-  modal(item?'编辑实验':'开始一个小实验',select('directionId','探索方向',[...(prefill.directionName?[['','新方向：'+prefill.directionName]]:[]),...visible('directions').map(d=>[d.id,d.name])])+field('title','这次想尝试什么？','text',true,'试着设计 ExploreOS 的核心体验')+field('hypothesis','你想验证的问题（可选）','textarea',false,'我可能更喜欢设计产品机制，而非纯实现。')+field('budget','参考预算 · 小时（可选）','number',false,'不设预算也可以')+'<p class="form-help">预算只是参考。随时暂停，没有需要凑满的时长。</p>',values=>{
+  const note=prefill.noteId?visible('notes').find(n=>n.id===prefill.noteId):null;
+  if(prefill.noteId&&(!note||note.sessionId)){notify('这条随手记已经整理过或已移入回收站。');return;}
+  const planFields=`<details class="optional-fields" ${item||prefill.nextAction||prefill.completion?'open':''}><summary>给这次尝试一个具体起点（可选）</summary>${field('nextAction','下一步准备做什么？','textarea',false,'例如：找一位从业者，聊聊普通工作日的样子。')}${field('completion','做到哪里就够了？','textarea',false,'例如：记下一个喜欢的环节和一个仍然好奇的问题。')}</details>`;
+  const origin=note?'<p class="form-help">保存后会同时建立实验，并把这条随手记原文整理为一条探索记录。日期沿用原随手记，时长与评分留空；原文仍保留。仅关闭窗口不会整理。</p>':prefill.problemId?'<p class="form-help">这个实验会关联来源问题，原问题继续留在问题口袋。</p>':'';
+  modal(item?'编辑实验':'开始一个小实验',origin+select('directionId','探索方向',[...(prefill.directionName?[['','新方向：'+prefill.directionName]]:[]),...visible('directions').map(d=>[d.id,d.name])])+field('title','这次想尝试什么？','text',true,'试着设计 ExploreOS 的核心体验')+field('hypothesis','你想验证的问题（可选）','textarea',false,'我可能更喜欢设计产品机制，而非纯实现。')+field('budget','参考预算 · 小时（可选）','number',false,'不设预算也可以')+'<p class="form-help">预算只是参考。随时暂停，没有需要凑满的时长。</p>'+planFields,values=>{
     const next={...item,...values,budget:number(values.budget),id:item?.id??uid(),status:item?.status??'active',createdAt:item?.createdAt??new Date().toISOString()};
+    let base=state;
     if(!next.directionId&&prefill.directionName){
       const existing=visible('directions').find(d=>d.name===prefill.directionName);
       const added=existing||{id:uid(),name:prefill.directionName};
       next.directionId=added.id;
-      save({...state,directions:existing?state.directions:[...state.directions,added],experiments:[...state.experiments,next]});
-    }else put('experiments',next,!!item);
-    if(!item){view='experiments';query='';statusFilter='';directionFilter='';render();}
-  },{values:item||{directionId:directionFilter||visible('directions')[0]?.id||'',...prefill},key:item?'experiment:'+item.id:'experiment:new'});
+      base={...state,directions:existing?state.directions:[...state.directions,added]};
+    }
+    if(item)save({...base,experiments:base.experiments.map(e=>e.id===item.id?next:e)});
+    else save(addExperiment(base,next,{problemId:prefill.problemId,noteId:prefill.noteId}));
+    if(!item){view='experiments';query='';statusFilter='';directionFilter='';focusedExperiment=next.id;render();}
+  },{values:item||{directionId:directionFilter||visible('directions')[0]?.id||'',...prefill},key:item?'experiment:'+item.id:prefill.noteId?'experiment:note:'+prefill.noteId:prefill.problemId?'experiment:problem:'+prefill.problemId:prefill.guideKey?'experiment:guide:'+prefill.guideKey:'experiment:new'});
 }
 function problemForm(item=null,prefill={}){
   modal(item?'编辑问题':'装进口袋的问题',field('text','你遇到了什么问题？','textarea',true)+field('workaround','现在怎么解决？哪里不满意？（可选）','textarea'),values=>put('problems',{...item,...values,id:item?.id??uid(),createdAt:item?.createdAt??new Date().toISOString()},!!item),{values:item||prefill,key:'problem:'+(item?.id??'new')});
@@ -317,7 +345,7 @@ function noteForm(item=null){
 }
 function attachNoteForm(id){
   const list=visible('experiments');
-  if(!list.length){notify('这句话已经保留。建立一个实验后，就可以整理过去。');return;}
+  if(!list.length){act('note-experiment',id);return;}
   modal('把随手记整理到实验',`<p class="form-help">原随手记会保留；同时新增一条探索记录，不会把未知时长或评分填成零。</p>`+select('experimentId','选择实验',list.map(e=>[e.id,e.title])),values=>save(attachNote(state,id,values.experimentId)),{key:'attach-note:'+id});
 }
 function sessionForm(experimentId,item=null){
@@ -334,18 +362,18 @@ function sessionForm(experimentId,item=null){
 }
 function reviewForm(id){
   const list=sessions(id);
+  const current=experiment(id);
   if(!list.length){notify('先留下一次真实探索，再生成记忆卡。现在也可以暂时放下这个实验。');return;}
   const averages=Object.entries(ratingLabels).map(([key,label])=>{
     const rated=list.filter(s=>s[key]!==null);
     return `<div><span>${label}</span><strong>${rated.length?(rated.reduce((sum,s)=>sum+s[key],0)/rated.length).toFixed(1)+' / 5':'未评分'}</strong><small>${rated.length} 条评分</small></div>`;
   }).join('');
-  modal('把这段经历，存成记忆',`<p class="form-help">回看 ${list.length} 条记录 · ${timeText(list)}。这些是你的记录摘要，决定仍由你做。</p><div class="review-stats">${averages}</div><details><summary>回看探索证据与感受</summary>${list.map(s=>recordHTML(s)).join('')}</details>`+field('reflection','你发现了什么？为什么做这个决定？','textarea',true,'什么让我想继续？什么还不确定？下次想改变什么？')+select('decision','接下来，我想',[['active','继续探索'],['hold','暂时放下'],['archived','归档这段经历']]),values=>{
-    const memory=makeMemory(state,id,values.decision,values.reflection);
-    save({...state,memories:[...state.memories,memory],experiments:state.experiments.map(e=>e.id===id?{...e,status:values.decision}:e)});
-  },{values:{decision:experiment(id).status},key:'review:'+id});
+  modal('把这段经历，存成记忆',`<p class="form-help">回看 ${list.length} 条记录 · ${timeText(list)}。这些是你的记录摘要，决定仍由你做。</p>${current.hypothesis?`<p class="form-help">当时想验证：${esc(current.hypothesis)}</p>`:''}${current.completion?`<p class="form-help">做到这里就够了：${esc(current.completion)}</p>`:''}<div class="review-stats">${averages}</div><details><summary>回看探索证据与感受</summary>${list.map(s=>recordHTML(s)).join('')}</details>`+field('reflection','你发现了什么？为什么做这个决定？','textarea',true,'什么让我想继续？什么还不确定？下次想改变什么？')+select('decision','接下来，我想',[['active','继续探索'],['hold','暂时放下'],['archived','归档这段经历']])+field('nextAction','留给下次的一个小行动（可选）','textarea',false,'继续时想试什么？也可以留空，先好好休息。')+'<p class="form-help">下一步会存入这张记忆，也会更新实验；没有截止日期，不需要马上执行。清空可移除当前实验的下一步，旧记忆仍保留。</p>',values=>{
+    save(reviewExperiment(state,id,values.decision,values.reflection,values.nextAction));
+  },{values:{decision:current.status,nextAction:current.nextAction||''},key:'review:'+id});
 }
 function memoryText(memory){
-  return `# ${memory.title}\n\n${date(memory.createdAt)} · ${statuses[memory.decision]} · ${timeText(memory.sessions)}\n\n${memory.reflection}\n\n## 探索证据\n\n${memory.sessions.map(s=>`### ${s.date}\n\n${s.action}\n\n${s.insight?'发现：'+s.insight+'\n\n':''}${s.skills.length?'技能线索：'+s.skills.join('、')+'\n':''}`).join('\n')}\n---\nNo Exploration Is Wasted.\n`;
+  return `# ${memory.title}\n\n${date(memory.createdAt)} · ${statuses[memory.decision]} · ${timeText(memory.sessions)}\n\n${memory.hypothesis?'当时想验证：'+memory.hypothesis+'\n\n':''}${memory.completion?'做到这里就够了：'+memory.completion+'\n\n':''}${memory.reflection}\n\n${memory.nextAction?'## 留给下次的小行动\n\n'+memory.nextAction+'\n\n':''}## 探索证据\n\n${memory.sessions.map(s=>`### ${s.date}\n\n${s.action}\n\n${s.insight?'发现：'+s.insight+'\n\n':''}${s.skills.length?'技能线索：'+s.skills.join('、')+'\n':''}`).join('\n')}\n---\nNo Exploration Is Wasted.\n`;
 }
 function download(data,prefix,type='application/json',extension='json'){
   const url=URL.createObjectURL(new Blob([data],{type})),anchor=document.createElement('a');
@@ -366,8 +394,23 @@ function restoreDisk(slotName){
   render();void mirrorToDisk(raw);notify('已从本机备份恢复。');
 }
 function act(action,id){
+  if(action==='clear-journal-filters'){query='';directionFilter='';journalFilters={kind:'',from:'',to:''};render();$('#search')?.focus();return;}
+  if(['open-note','open-session','open-problem'].includes(action)){
+    const collection=action==='open-problem'?'problems':action==='open-note'?'notes':'sessions';
+    if(!visible(collection).some(item=>item.id===id)){notify('这条记录已移入回收站，可以在数据备份中恢复。');return;}
+    navigate(action==='open-problem'?'problems':'journal');
+    const attribute=action==='open-problem'?'problem':action==='open-note'?'note':'record';
+    const target=[...document.querySelectorAll(`[data-${attribute}]`)].find(element=>element.dataset[attribute]===id);
+    target.tabIndex=-1;target.focus({preventScroll:true});target.scrollIntoView({block:'center',behavior:'smooth'});return;
+  }
   if(action==='note'||action==='edit-note'){noteForm(action==='edit-note'?state.notes.find(n=>n.id===id):null);return;}
   if(action==='attach-note'){attachNoteForm(id);return;}
+  if(action==='note-experiment'){
+    const note=visible('notes').find(n=>n.id===id);
+    if(!note||note.sessionId){notify('这条随手记已经整理过或已移入回收站。');return;}
+    const noteDirection=visible('directions').find(d=>d.id===note.directionId);
+    experimentForm(null,{noteId:id,title:note.text.slice(0,100),...(noteDirection?{directionId:noteDirection.id}:{})});return;
+  }
   if(['guide-interested','guide-later','guide-tried'].includes(action)&&currentGuide){
     const value=action.slice(6),guideKey=currentGuide.guideKey;
     save({...state,guideFeedback:[...(state.guideFeedback||[]).filter(f=>f.guideKey!==guideKey),{guideKey,value,createdAt:new Date().toISOString()}]});
@@ -387,14 +430,14 @@ function act(action,id){
   if(action.startsWith('restore-')){save(restoreItem(state,action.slice(8),id));notify('已恢复。');return;}
   if(action==='undo'){if(undo){save(restoreItem(state,undo.collection,undo.id));undo=null;notify('已撤销移除。');}return;}
   if(action==='open-direction'){navigate('experiments');directionFilter=id;render();return;}
-  if(action==='open-experiment'){navigate('experiments');query=experiment(id).title;render();return;}
+  if(action==='open-experiment'){navigate('experiments');focusedExperiment=id;render();return;}
   if(action==='export'){download(JSON.stringify(state,null,2),'exploreos');return;}
   if(action==='raw'){download(localStorage.getItem(KEY)||'{}','exploreos-raw');return;}
   if(action==='export-memory'){download(memoryText(state.memories.find(m=>m.id===id)),'exploreos-memory','text/markdown;charset=utf-8','md');return;}
   if(action==='guide-next'){guideIndex++;render();return;}
   if(action==='guide-experiment'){
     if(!currentGuide)return;
-    experimentForm(null,{directionId:currentGuide.directionId,directionName:currentGuide.focusName,title:currentGuide.title,hypothesis:currentGuide.hypothesis,budget:String(Number(guidePrefs.minutes)/60)});
+    experimentForm(null,{directionId:currentGuide.directionId,directionName:currentGuide.focusName,title:currentGuide.title,hypothesis:currentGuide.hypothesis,budget:String(Number(guidePrefs.minutes)/60),nextAction:currentGuide.steps.map((step,i)=>`${i+1}. ${step}`).join('\n'),completion:currentGuide.completion,guideKey:currentGuide.guideKey});
     return;
   }
   if(action==='guide-problem'){
@@ -412,7 +455,7 @@ function act(action,id){
   if(action==='remove-direction'){save(trashItem(state,'directions',id));clearDraft();$('#dialog').close();notify('方向已移入回收站。');}
   if(action==='experiment'||action==='edit-experiment')experimentForm(action==='edit-experiment'?experiment(id):null);
   if(action==='starter')experimentForm(null,{title:'观察一个自己喜欢的产品',hypothesis:'了解它怎样解决一个真实问题，看看自己对哪个环节好奇。'});
-  if(action==='problem-experiment'){const p=state.problems.find(p=>p.id===id);experimentForm(null,{title:p.text.slice(0,100),hypothesis:`我想进一步了解这个问题：${p.text}\n\n现有方式：${p.workaround||'还没记录'}`});}
+  if(action==='problem-experiment'){const p=visible('problems').find(p=>p.id===id);if(!p)throw Error('请先恢复这个问题。');experimentForm(null,{problemId:p.id,title:p.text.slice(0,100),hypothesis:`我想进一步了解这个问题：${p.text}\n\n现有方式：${p.workaround||'还没记录'}`});}
   if(action==='session'||action==='quick-session'||action==='edit-session')sessionForm(action==='session'?id:null,action==='edit-session'?state.sessions.find(s=>s.id===id):null);
   if(action==='hold'||action==='resume'){update('experiments',{...experiment(id),status:action==='hold'?'hold':'active'});notify(action==='hold'?'已经暂放。想继续时，随时回来。':'已经重新开启。');}
   if(action==='review')reviewForm(id);
@@ -443,7 +486,7 @@ $('#form').onsubmit=event=>{
 };
 function searchInput(event){
   if(event.target.id!=='search'||event.isComposing)return;
-  query=event.target.value;const cursor=event.target.selectionStart;render();$('#search').focus();
+  query=event.target.value;focusedExperiment='';const cursor=event.target.selectionStart;render();$('#search').focus();
   try{$('#search').setSelectionRange(cursor,cursor);}catch{/* Some browsers do not expose a search selection. */}
 }
 document.addEventListener('input',searchInput);
@@ -453,8 +496,12 @@ document.addEventListener('change',async event=>{
     guidePrefs={...guidePrefs,[event.target.dataset.guidePref]:event.target.value};
     guideIndex=0;render();return;
   }
-  if(event.target.id==='direction-filter'){directionFilter=event.target.value;render();}
-  if(event.target.id==='status-filter'){statusFilter=event.target.value;render();}
+  if(event.target.id==='direction-filter'){directionFilter=event.target.value;focusedExperiment='';render();}
+  if(event.target.id==='status-filter'){statusFilter=event.target.value;focusedExperiment='';render();}
+  if(['journal-kind','journal-from','journal-to'].includes(event.target.id)){
+    const control=event.target.id;
+    journalFilters={...journalFilters,[control.slice(8)]:event.target.value};render();$('#'+control).focus();return;
+  }
   if(event.target.id!=='import-file')return;
   const file=event.target.files[0];if(!file)return;
   try{

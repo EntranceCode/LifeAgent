@@ -75,12 +75,24 @@ export function attachNote(state,noteId,experimentId) {
   const session={id:uid(),experimentId,date:note.date,action:note.text,insight:'',minutes:null,feeling:null,achievement:null,again:null,skills:[]};
   return {...state,sessions:[...state.sessions,session],notes:state.notes.map(item=>item.id===noteId?{...item,directionId:experiment.directionId,sessionId:session.id}:item)};
 }
-export function makeMemory(state,experimentId,decision,reflection) {
+export function addExperiment(state,experiment,{problemId=null,noteId=null}={}) {
+  if(problemId&&!visibleItems(state,'problems').some(item=>item.id===problemId))throw Error('来源问题已移入回收站，请恢复后再创建实验。');
+  const item=problemId?{...experiment,sourceProblemId:problemId}:experiment;
+  let next=validateState({...state,experiments:[...state.experiments,item]});
+  // Creating the experiment and filing a note are one save, or neither succeeds.
+  if(noteId)next=attachNote(next,noteId,item.id);
+  return validateState(next);
+}
+export function makeMemory(state,experimentId,decision,reflection,nextAction='') {
   const e=visibleItems(state,'experiments').find(e=>e.id===experimentId);
-  if(!e || !Object.hasOwn(statuses,decision) || typeof reflection!=='string' || !reflection.trim() || reflection.length>20000) throw Error('请填写复盘内容并选择有效决定。');
+  if(!e || !Object.hasOwn(statuses,decision) || typeof reflection!=='string' || !reflection.trim() || reflection.length>20000 || typeof nextAction!=='string' || nextAction.length>20000) throw Error('请填写有效复盘内容、决定与下一步。');
   const sessions=visibleItems(state,'sessions').filter(s=>s.experimentId===experimentId);
   if(!sessions.length) throw Error('先留下一次真实探索，再生成记忆卡。');
-  return {id:uid(),experimentId,title:e.title,decision,reflection:reflection.trim(),sessions:structuredClone(sessions),createdAt:new Date().toISOString()};
+  return {id:uid(),experimentId,title:e.title,hypothesis:e.hypothesis,completion:e.completion||'',nextAction:nextAction.trim(),decision,reflection:reflection.trim(),sessions:structuredClone(sessions),createdAt:new Date().toISOString()};
+}
+export function reviewExperiment(state,experimentId,decision,reflection,nextAction='') {
+  const memory=makeMemory(state,experimentId,decision,reflection,nextAction);
+  return validateState({...state,memories:[...state.memories,memory],experiments:state.experiments.map(item=>item.id===experimentId?{...item,status:decision,nextAction:memory.nextAction}:item)});
 }
 
 function calendarDate(value) {
@@ -100,6 +112,7 @@ function timestamp(value) {
 export function validateState(d) {
   const fail=()=>{throw Error('备份格式不正确或记录关联缺失，当前数据未被替换。');};
   const str=(v,max=20000)=>typeof v==='string'&&v.length<=max;
+  const optionalText=(v,key)=>!Object.hasOwn(v,key)||str(v[key]);
   const nonempty=v=>str(v,300)&&v.trim().length>0;
   const text=v=>str(v)&&v.trim().length>0;
   const date=v=>calendarDate(v)||timestamp(v);
@@ -115,10 +128,15 @@ export function validateState(d) {
   }
   const dirs=new Set(d.directions.map(v=>v.id)), exps=new Set(d.experiments.map(v=>v.id));
   for(const v of d.directions) if(!nonempty(v.name)) fail();
-  for(const v of d.experiments) if(!dirs.has(v.directionId)||!nonempty(v.title)||!str(v.hypothesis)||!number(v.budget)||!Object.hasOwn(statuses,v.status)||!date(v.createdAt)) fail();
+  const problems=new Set(d.problems.map(v=>v.id));
+  for(const v of d.experiments) {
+    if(!dirs.has(v.directionId)||!nonempty(v.title)||!str(v.hypothesis)||!number(v.budget)||!Object.hasOwn(statuses,v.status)||!date(v.createdAt)||!optionalText(v,'nextAction')||!optionalText(v,'completion')) fail();
+    if(Object.hasOwn(v,'sourceProblemId')&&(!nonempty(v.sourceProblemId)||!problems.has(v.sourceProblemId)))fail();
+  }
   const session=v=>v&&typeof v==='object'&&!Array.isArray(v)&&nonempty(v.id)&&exps.has(v.experimentId)&&date(v.date)&&text(v.action)&&number(v.minutes)&&score(v.feeling)&&score(v.achievement)&&score(v.again)&&str(v.insight)&&Array.isArray(v.skills)&&v.skills.length<=100&&v.skills.every(nonempty)&&deletion(v);
   for(const v of d.sessions) if(!session(v)) fail();
   for(const v of d.memories) {
+    if(!['hypothesis','completion','nextAction'].every(key=>optionalText(v,key)))fail();
     if(!exps.has(v.experimentId)||!nonempty(v.title)||!Object.hasOwn(statuses,v.decision)||!text(v.reflection)||!date(v.createdAt)||!Array.isArray(v.sessions)||!v.sessions.length||v.sessions.length>50000||!v.sessions.every(s=>session(s)&&s.experimentId===v.experimentId)) fail();
     if(new Set(v.sessions.map(session=>session.id)).size!==v.sessions.length) fail();
   }
